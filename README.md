@@ -68,17 +68,29 @@ The rules that follow from this:
 ## Current state
 
 See `experiments/registry.csv` for per-patch status and
-`experiments/DECISIONS.md` for the reasoning behind every kill and keep. The
-short version as of the last update:
+`experiments/DECISIONS.md` for the reasoning behind every kill and keep.
+CTC round 1 (anchor `d6b40b7893`, Class A1 17f 4K and A2 33f 4K) is in, and
+judged against the Complexity-to-Efficiency bar of speedup% / BD-rate%
+(>=20 at Speed 4):
 
-- **i02, i03, i05** — proven bit-exact; zero quality risk, no CTC round needed.
-  Their *speed* remains unquantified and is the open question.
-- **i06** — the only patch with a speedup that is unambiguous across both
-  round-1 measurement designs, and, being partition pruning, the one with the
-  most BD-rate risk at 4K.
-- **i01, i07, i09** — real but under the 5% bar.
-- **i04, i08, i10** — never resolved above the measurement noise floor; i04 may
-  in fact be a slowdown.
+- **i09 — PROMOTE.** +2.60%/+0.11% on A1 (ratio 23.6), +2.27%/+0.09% on A2
+  (25.2). The only patch clearing the bar on both classes.
+- **i06 — IMPROVE.** +14.00%/+0.75% on A1 (18.7), +18.52%/+1.29% on A2 (14.4).
+  The only patch with real magnitude, and it fails close on A1. A2 binds: it
+  needs BD 1.29% -> 0.926% at unchanged speed. Reworked as
+  `patches/0006b-orientation-pruning-frame-aware.patch`.
+- **i01, i04, i07, i08, i10 — DISCARD.** BD cost far over the bar, or no
+  speedup at all; i04 and i10 are slowdowns on 4K.
+- **i02, i03, i05 — DISCARD.** CTC confirms exactly +0.00% BD on every metric,
+  so the Tier-0 bit-exactness result was right and cost 25 minutes rather than
+  a CTC slot. But all three are *slower* at 4K. Zero risk and zero benefit is
+  not a feature.
+
+The result that should shape the next round is the combination arithmetic. All
+ten together give +20.34%/+2.50% (8.1) on A1. Backing i06 out — speedups
+compound, BD-rate adds — leaves the other nine contributing ~7.4% speed for
+~1.75% BD, a ratio of ~4.2. Nine patches buy a third of i06's speedup at twice
+its quality cost. **The next round should test i06b+i09, not all-10.**
 
 ## Protocol
 
