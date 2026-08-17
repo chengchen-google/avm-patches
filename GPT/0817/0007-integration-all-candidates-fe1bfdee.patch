@@ -1,0 +1,125 @@
+diff --git a/av2/encoder/pickccso.c b/av2/encoder/pickccso.c
+index a5898421a8382889f4a88002323e33994343089a..93665a0ad36df0a18edcb4af5bf34ab5442688b4 100644
+--- a/av2/encoder/pickccso.c
++++ b/av2/encoder/pickccso.c
+@@ -1260,7 +1260,13 @@ static void derive_ccso_filter(CcsoCtx *ctx, AV2_COMMON *cm, const int plane,
+   }
+ 
+   for (int scale_idx = 0; scale_idx < total_scale_idx; ++scale_idx) {
+-    for (uint8_t ccso_bo_only = 0; ccso_bo_only < 2; ccso_bo_only++) {
++    for (uint8_t search_idx = 0; search_idx < 2; search_idx++) {
++      // A BO-only candidate is cheaper and covers a different part of the
++      // search space. Under early termination, evaluate it first so the full
++      // filter search starts with a finite RD bound. Keep the original order
++      // for exhaustive search, where ordering should not affect the result.
++      const uint8_t ccso_bo_only =
++          early_terminate_ccso_search ? 1 - search_idx : search_idx;
+       int num_filter_iter = ccso_bo_only ? 1 : total_filter_support;
+       int num_quant_iter = ccso_bo_only ? 1 : total_quant_idx;
+       int num_edge_clf_iter = ccso_bo_only ? 1 : total_edge_classifier;
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 48cc7b0f749c6d19658a2a50e90b9f58b24131fc..748fe88bbd47e31435c462d18f9be0daf0eca081 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -199,6 +199,13 @@ static void set_good_speed_feature_framesize_dependent(
+   if (speed >= 3) {
+     sf->part_sf.use_square_partition_only_threshold = BLOCK_128X128;
+ 
++    // Promote the conservative speed-4 transform-statistics gate to speed 3
++    // for the resolutions where the statistics are used. Its speed-3
++    // tradeoff must be established independently by EDA.
++    if (is_480p_or_larger) {
++      sf->tx_sf.tx_type_search.prune_tx_type_using_stats = 1;
++    }
++
+     sf->part_sf.ml_early_term_after_part_split_level = 0;
+ 
+     if (is_720p_or_larger) {
+@@ -476,7 +483,10 @@ static void set_good_speed_features_framesize_independent(
+     sf->interp_sf.use_interp_filter = 1;
+     sf->tx_sf.tx_type_search.skip_tx_search = 1;
+     sf->intra_sf.skip_intra_dip_search = true;
+-    sf->rd_sf.disable_tcq = 1;
++    if (speed <= 4)
++      sf->rd_sf.use_frame_adaptive_tcq = 1;
++    else
++      sf->rd_sf.disable_tcq = 1;
+     // --- End ---
+ 
+     sf->lpf_sf.enable_deblock_for_partition_search = 0;
+@@ -525,8 +535,10 @@ static void set_good_speed_features_framesize_independent(
+     sf->inter_sf.txfm_rd_gate_level =
+         boosted ? 0 : (is_boosted_arf2_bwd_type ? 1 : 2);
+ 
+-    sf->intra_sf.disable_smooth_intra =
+-        !frame_is_intra_only(&cpi->common) || (cpi->rc.frames_to_key != 1);
++    // Keep smooth predictors available. The isolated OFF test reports a large
++    // coding loss from disabling them and no measured aggregate speed
++    // benefit, so an additional lossy gate is not justified here.
++    sf->intra_sf.disable_smooth_intra = 0;
+     sf->intra_sf.prune_palette_search_level = 2;
+ 
+     sf->tpl_sf.prune_ref_frames_in_tpl = 1;
+@@ -547,6 +559,9 @@ static void set_good_speed_features_framesize_independent(
+     // TODO(any): Re-enable for inter frames after fixing speed feature.
+     sf->winner_mode_sf.enable_winner_mode_for_tx_size_srch = 0;
+     sf->winner_mode_sf.enable_winner_mode_for_use_tx_domain_dist = 1;
++    // Use the conservative DC-block predictor at speed 3. Speed 4 upgrades
++    // this to level 2 below, which also enables prediction in winner mode.
++    sf->winner_mode_sf.dc_blk_pred_level = 1;
+     sf->winner_mode_sf.motion_mode_for_winner_cand =
+         boosted                                                      ? 0
+         : gf_group->update_type[gf_group->index] == INTNL_ARF_UPDATE ? 1
+@@ -570,7 +585,10 @@ static void set_good_speed_features_framesize_independent(
+     sf->inter_sf.txfm_rd_gate_level = boosted ? 0 : 4;
+ 
+     sf->inter_sf.prune_inter_modes_based_on_tpl = boosted ? 0 : 3;
+-    sf->inter_sf.prune_comp_using_best_single_mode_ref = 2;
++    // Level 2 also prunes when the corresponding best single mode has not
++    // been evaluated. Level 1 keeps that compound candidate and only prunes
++    // when actual single-mode evidence is available.
++    sf->inter_sf.prune_comp_using_best_single_mode_ref = 1;
+ 
+     sf->intra_sf.intra_uv_mode_mask[TX_16X16] = UV_INTRA_DC_H_V_CFL;
+     sf->intra_sf.intra_uv_mode_mask[TX_32X32] = UV_INTRA_DC_H_V_CFL;
+@@ -946,6 +964,7 @@ static AVM_INLINE void init_rd_sf(RD_CALC_SPEED_FEATURES *rd_sf,
+   rd_sf->use_mb_rd_hash = 1;
+   rd_sf->simple_model_rd_from_var = 0;
+   rd_sf->disable_tcq = 0;
++  rd_sf->use_frame_adaptive_tcq = 0;
+   rd_sf->tx_domain_dist_level = 0;
+   rd_sf->tx_domain_dist_thres_level = 0;
+   rd_sf->perform_coeff_opt = 0;
+@@ -1234,10 +1253,15 @@ void av2_set_speed_features_framesize_independent(AV2_COMP *cpi, int speed) {
+     if (sf->intra_sf.skip_intra_dip_search) {
+       cpi->common.seq_params.enable_intra_dip = 0;
+     }
+-    // Disable tcq modes in sequence header when cpu-used >= 2
++    // Apply TCQ speed policy in the sequence header. Frame-adaptive TCQ is a
++    // normative mode and therefore avoids unsupported block-level switching.
+     if (sf->rd_sf.disable_tcq) {
+       cpi->common.seq_params.enable_tcq = TCQ_DISABLE;
+       cpi->common.features.tcq_mode = TCQ_DISABLE;
++    } else if (sf->rd_sf.use_frame_adaptive_tcq &&
++               cpi->common.seq_params.enable_tcq != TCQ_DISABLE &&
++               !cpi->common.seq_params.single_picture_header_flag) {
++      cpi->common.seq_params.enable_tcq = TCQ_8ST_FR;
+     }
+ 
+     if (cpi->common.seq_params.enable_restoration)
+diff --git a/av2/encoder/speed_features.h b/av2/encoder/speed_features.h
+index 092a343084270de07a25774150d7edf79436a7a8..05a0d8ffae0d5c2672f653f27a97cb07d3421861 100644
+--- a/av2/encoder/speed_features.h
++++ b/av2/encoder/speed_features.h
+@@ -919,6 +919,11 @@ typedef struct RD_CALC_SPEED_FEATURES {
+   // Use regular scaler quant instead of trellis coded quant
+   bool disable_tcq;
+ 
++  // Use the normative frame-adaptive TCQ mode: enable TCQ only on intra and
++  // pyramid-level 0/1 frames. This preserves TCQ on important reference
++  // frames without paying its search cost on higher temporal layers.
++  bool use_frame_adaptive_tcq;
++
+   // Whether to compute distortion in the image domain (slower but
+   // more accurate), or in the transform domain (faster but less acurate).
+   // 0: use image domain

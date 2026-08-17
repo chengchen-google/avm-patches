@@ -1,0 +1,57 @@
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 48cc7b0f749c6d19658a2a50e90b9f58b24131fc..04584b7e811f655b90dcb7319dab6387d402b268 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -476,7 +476,10 @@ static void set_good_speed_features_framesize_independent(
+     sf->interp_sf.use_interp_filter = 1;
+     sf->tx_sf.tx_type_search.skip_tx_search = 1;
+     sf->intra_sf.skip_intra_dip_search = true;
+-    sf->rd_sf.disable_tcq = 1;
++    if (speed <= 4)
++      sf->rd_sf.use_frame_adaptive_tcq = 1;
++    else
++      sf->rd_sf.disable_tcq = 1;
+     // --- End ---
+ 
+     sf->lpf_sf.enable_deblock_for_partition_search = 0;
+@@ -946,6 +949,7 @@ static AVM_INLINE void init_rd_sf(RD_CALC_SPEED_FEATURES *rd_sf,
+   rd_sf->use_mb_rd_hash = 1;
+   rd_sf->simple_model_rd_from_var = 0;
+   rd_sf->disable_tcq = 0;
++  rd_sf->use_frame_adaptive_tcq = 0;
+   rd_sf->tx_domain_dist_level = 0;
+   rd_sf->tx_domain_dist_thres_level = 0;
+   rd_sf->perform_coeff_opt = 0;
+@@ -1234,10 +1238,15 @@ void av2_set_speed_features_framesize_independent(AV2_COMP *cpi, int speed) {
+     if (sf->intra_sf.skip_intra_dip_search) {
+       cpi->common.seq_params.enable_intra_dip = 0;
+     }
+-    // Disable tcq modes in sequence header when cpu-used >= 2
++    // Apply TCQ speed policy in the sequence header. Frame-adaptive TCQ is a
++    // normative mode and therefore avoids unsupported block-level switching.
+     if (sf->rd_sf.disable_tcq) {
+       cpi->common.seq_params.enable_tcq = TCQ_DISABLE;
+       cpi->common.features.tcq_mode = TCQ_DISABLE;
++    } else if (sf->rd_sf.use_frame_adaptive_tcq &&
++               cpi->common.seq_params.enable_tcq != TCQ_DISABLE &&
++               !cpi->common.seq_params.single_picture_header_flag) {
++      cpi->common.seq_params.enable_tcq = TCQ_8ST_FR;
+     }
+ 
+     if (cpi->common.seq_params.enable_restoration)
+diff --git a/av2/encoder/speed_features.h b/av2/encoder/speed_features.h
+index 092a343084270de07a25774150d7edf79436a7a8..05a0d8ffae0d5c2672f653f27a97cb07d3421861 100644
+--- a/av2/encoder/speed_features.h
++++ b/av2/encoder/speed_features.h
+@@ -919,6 +919,11 @@ typedef struct RD_CALC_SPEED_FEATURES {
+   // Use regular scaler quant instead of trellis coded quant
+   bool disable_tcq;
+ 
++  // Use the normative frame-adaptive TCQ mode: enable TCQ only on intra and
++  // pyramid-level 0/1 frames. This preserves TCQ on important reference
++  // frames without paying its search cost on higher temporal layers.
++  bool use_frame_adaptive_tcq;
++
+   // Whether to compute distortion in the image domain (slower but
+   // more accurate), or in the transform domain (faster but less acurate).
+   // 0: use image domain

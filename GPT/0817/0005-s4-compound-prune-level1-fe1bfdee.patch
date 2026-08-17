@@ -1,0 +1,16 @@
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 48cc7b0f749c6d19658a2a50e90b9f58b24131fc..ecf09dbb8a7e58b4658dbe09eff88ae989e39bab 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -570,7 +570,10 @@ static void set_good_speed_features_framesize_independent(
+     sf->inter_sf.txfm_rd_gate_level = boosted ? 0 : 4;
+ 
+     sf->inter_sf.prune_inter_modes_based_on_tpl = boosted ? 0 : 3;
+-    sf->inter_sf.prune_comp_using_best_single_mode_ref = 2;
++    // Level 2 also prunes when the corresponding best single mode has not
++    // been evaluated. Level 1 keeps that compound candidate and only prunes
++    // when actual single-mode evidence is available.
++    sf->inter_sf.prune_comp_using_best_single_mode_ref = 1;
+ 
+     sf->intra_sf.intra_uv_mode_mask[TX_16X16] = UV_INTRA_DC_H_V_CFL;
+     sf->intra_sf.intra_uv_mode_mask[TX_32X32] = UV_INTRA_DC_H_V_CFL;
