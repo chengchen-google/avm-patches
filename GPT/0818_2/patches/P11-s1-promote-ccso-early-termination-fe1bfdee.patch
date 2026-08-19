@@ -1,0 +1,16 @@
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 48cc7b0f749c6d19658a2a50e90b9f58b24131fc..794279fe111be6d2a2869069d6550b9590319ad5 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -339,6 +339,11 @@ static void set_good_speed_features_framesize_independent(
+   sf->rd_sf.perform_coeff_opt = 1;
+ 
+   if (speed >= 1) {
++    // The speed-2 OFF test found CCSO cost-based early termination to be one
++    // of the highest-efficiency existing speed features. Promote it one preset
++    // for direct Speed-1 evaluation.
++    sf->lpf_sf.early_terminate_ccso_search_by_cost = 1;
++
+     sf->flexmv_sf.prune_non_one_pel_mv_using_best_mv_prec = 1;
+     sf->inter_sf.selective_ref_frame = 2;
+     sf->inter_sf.prune_newmv_modes_using_prior_rd = 1;

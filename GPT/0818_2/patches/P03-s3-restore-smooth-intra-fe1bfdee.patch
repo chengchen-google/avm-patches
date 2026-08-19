@@ -1,0 +1,17 @@
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 48cc7b0f749c6d19658a2a50e90b9f58b24131fc..6ada18050cfb555c5a7cbca571a8bf9c17b22585 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -525,8 +525,10 @@ static void set_good_speed_features_framesize_independent(
+     sf->inter_sf.txfm_rd_gate_level =
+         boosted ? 0 : (is_boosted_arf2_bwd_type ? 1 : 2);
+ 
+-    sf->intra_sf.disable_smooth_intra =
+-        !frame_is_intra_only(&cpi->common) || (cpi->rc.frames_to_key != 1);
++    // Keep smooth predictors available. The isolated OFF test reports a large
++    // coding loss from disabling them and no measured aggregate speed
++    // benefit, so an additional lossy gate is not justified here.
++    sf->intra_sf.disable_smooth_intra = 0;
+     sf->intra_sf.prune_palette_search_level = 2;
+ 
+     sf->tpl_sf.prune_ref_frames_in_tpl = 1;

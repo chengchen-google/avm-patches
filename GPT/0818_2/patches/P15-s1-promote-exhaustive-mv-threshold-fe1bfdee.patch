@@ -1,0 +1,16 @@
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 48cc7b0f749c6d19658a2a50e90b9f58b24131fc..cb226cfa9ab698c57ae3fe9c61b64613604d5764 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -415,6 +415,11 @@ static void set_good_speed_features_framesize_independent(
+     sf->part_sf.partition_pruning_with_mlp = 1;
+     sf->part_sf.partition_pruning_with_mlp_none_thresh = 3.5f;
+     sf->lpf_sf.enable_deblock_for_partition_search = 1;
++
++    // Promote the Speed-2 exhaustive-search threshold to Speed 1. Keep the
++    // screen-content split used by the measured Speed-2 feature.
++    sf->mv_sf.exhaustive_searches_thresh =
++        cpi->is_screen_content_type ? (1 << 21) : (1 << 26);
+   }
+ 
+   if (speed >= 2) {

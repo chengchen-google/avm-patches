@@ -1,0 +1,132 @@
+diff --git a/av2/encoder/tx_search.c b/av2/encoder/tx_search.c
+index 4a195ffac286ff561b28e262c7a849af42ca74e4..5c8b3b40af7a8a35956588963e23da991573550e 100644
+--- a/av2/encoder/tx_search.c
++++ b/av2/encoder/tx_search.c
+@@ -3144,6 +3144,94 @@ static AVM_INLINE int skip_tx_partition_by_eval_type(
+   return 0;
+ }
+ 
++enum { TX_PART_STATIONARITY_STRIPS = 4 };
++
++// Margin 2 accepts a strongest strip up to 1.5x the mean. Margin 1 accepts up
++// to 2x. Keep the measured passing margin on key and low-depth reference
++// frames, and spend the more aggressive margin only at deeper hierarchy levels.
++static AVM_INLINE int tx_partition_stationarity_margin(
++    const AV2_COMP *const cpi) {
++  const GF_GROUP *const gf_group = &cpi->gf_group;
++  const int layer_depth = gf_group->layer_depth[gf_group->index];
++  return layer_depth > 2 ? 1 : 2;
++}
++
++// Measure whether residual magnitude is distributed evenly across strips on
++// each axis. The walk is subsampled for transforms at least 16 pixels wide or
++// high because the result is only used as a search gate.
++static AVM_INLINE void measure_residual_stationarity(
++    const MACROBLOCK *x, BLOCK_SIZE plane_bsize, int blk_row, int blk_col,
++    TX_SIZE max_tx_size, int margin, int *stationary_rows,
++    int *stationary_cols) {
++  *stationary_rows = 0;
++  *stationary_cols = 0;
++
++  const int txw = tx_size_wide[max_tx_size];
++  const int txh = tx_size_high[max_tx_size];
++  if (txw < TX_PART_STATIONARITY_STRIPS * 2 ||
++      txh < TX_PART_STATIONARITY_STRIPS * 2) {
++    return;
++  }
++
++  const struct macroblock_plane *const p = &x->plane[0];
++  const int diff_stride = block_size_wide[plane_bsize];
++  const int16_t *const diff =
++      &p->src_diff[(blk_row * diff_stride + blk_col) << MI_SIZE_LOG2];
++  const int step_y = txh >= 16 ? 2 : 1;
++  const int step_x = txw >= 16 ? 2 : 1;
++  const int strip_h = txh / TX_PART_STATIONARITY_STRIPS;
++  const int strip_w = txw / TX_PART_STATIONARITY_STRIPS;
++
++  uint64_t row_magnitude[TX_PART_STATIONARITY_STRIPS] = { 0 };
++  uint64_t col_magnitude[TX_PART_STATIONARITY_STRIPS] = { 0 };
++  uint64_t total = 0;
++
++  for (int i = 0; i < txh; i += step_y) {
++    const int16_t *const row = diff + (ptrdiff_t)i * diff_stride;
++    const int strip_i =
++        AVMMIN(i / strip_h, TX_PART_STATIONARITY_STRIPS - 1);
++    for (int j = 0; j < txw; j += step_x) {
++      const uint64_t magnitude = (uint64_t)abs((int)row[j]);
++      row_magnitude[strip_i] += magnitude;
++      col_magnitude[AVMMIN(j / strip_w,
++                           TX_PART_STATIONARITY_STRIPS - 1)] += magnitude;
++      total += magnitude;
++    }
++  }
++
++  if (total == 0) {
++    *stationary_rows = 1;
++    *stationary_cols = 1;
++    return;
++  }
++
++  const uint64_t mean = total / TX_PART_STATIONARITY_STRIPS;
++  uint64_t max_row = 0;
++  uint64_t max_col = 0;
++  for (int s = 0; s < TX_PART_STATIONARITY_STRIPS; ++s) {
++    max_row = AVMMAX(max_row, row_magnitude[s]);
++    max_col = AVMMAX(max_col, col_magnitude[s]);
++  }
++
++  const uint64_t bound = mean * (margin + 1);
++  *stationary_rows = max_row * margin <= bound;
++  *stationary_cols = max_col * margin <= bound;
++}
++
++static AVM_INLINE int tx_partition_cuts_stationary_axis(
++    TX_PARTITION_TYPE type, int stationary_rows, int stationary_cols) {
++  switch (type) {
++    case TX_PARTITION_HORZ:
++    case TX_PARTITION_HORZ4:
++    case TX_PARTITION_HORZ5: return stationary_rows;
++    case TX_PARTITION_VERT:
++    case TX_PARTITION_VERT4:
++    case TX_PARTITION_VERT5: return stationary_cols;
++    case TX_PARTITION_SPLIT: return stationary_rows && stationary_cols;
++    default: return 0;
++  }
++}
++
+ // Search for the best tx partition type for a given luma block.
+ static void select_tx_partition_type(
+     const AV2_COMP *cpi, MACROBLOCK *x, int blk_row, int blk_col, int block,
+@@ -3190,6 +3278,9 @@ static void select_tx_partition_type(
+   uint8_t best_partition_entropy_ctxs[MAX_TX_PARTITIONS] = { 0 };
+   TX_TYPE best_partition_tx_types[MAX_TX_PARTITIONS] = { 0 };
+   uint8_t full_blk_skip[MAX_TX_PARTITIONS] = { 0 };
++  int stationary_rows = 0;
++  int stationary_cols = 0;
++  int stationarity_valid = 0;
+ 
+   for (TX_PARTITION_TYPE type = 0; type < TX_PARTITION_TYPES; ++type) {
+     if (cpi->common.seq_params.reduced_tx_part_set &&
+@@ -3237,6 +3328,22 @@ static void select_tx_partition_type(
+       }
+     }
+ 
++    // The residual walk is deliberately last among the cheap eligibility
++    // checks and is computed only if a legal non-NONE candidate survives.
++    if (cpi->speed == 4 && type != TX_PARTITION_NONE) {
++      if (!stationarity_valid) {
++        measure_residual_stationarity(
++            x, plane_bsize, blk_row, blk_col, max_tx_size,
++            tx_partition_stationarity_margin(cpi), &stationary_rows,
++            &stationary_cols);
++        stationarity_valid = 1;
++      }
++      if (tx_partition_cuts_stationary_axis(type, stationary_rows,
++                                            stationary_cols)) {
++        continue;
++      }
++    }
++
+     RD_STATS partition_rd_stats;
+     av2_init_rd_stats(&partition_rd_stats);
+     int64_t tmp_rd = 0;

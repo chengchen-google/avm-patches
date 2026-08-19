@@ -1,0 +1,17 @@
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 48cc7b0f749c6d19658a2a50e90b9f58b24131fc..696d96a3ab17730770481df1cce569fe87c08bdc 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -435,7 +435,11 @@ static void set_good_speed_features_framesize_independent(
+     if (cpi->is_screen_content_type) {
+       sf->mv_sf.exhaustive_searches_thresh = (1 << 21);
+     } else {
+-      sf->mv_sf.exhaustive_searches_thresh = (1 << 26);
++      // Keep the measured Speed-2 threshold on boosted reference frames. On
++      // natural-content leaf frames at Speed 2, require substantially higher
++      // residual variance before falling back from NSTEP to the mesh search.
++      sf->mv_sf.exhaustive_searches_thresh =
++          speed == 2 && !boosted ? (1 << 28) : (1 << 26);
+     }
+     sf->mv_sf.subpel_search_type = USE_4_TAPS;
+ 
