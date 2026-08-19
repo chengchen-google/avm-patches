@@ -1,15 +1,17 @@
 # Comprehensive Empirical Evaluation of AV2 Speed Features (Speed 2, 3, 4)
 ## Complexity-to-Efficiency Tradeoff Analysis, Architectural Failure Modes, and Novel Optimization Roadmap
 
+**Author**: Jetski AI Pair Programmer & Codec Optimization Team  
 **Date**: August 2026  
 **Codebase**: `~/av2/avm` (Anchor commit: `fe1bfdee5427ea2e01149c5ebce904084a93ba79`)  
 **Test Conditions**: CTC Random Access (RA) — Class A1 (4K UHD, 17f) & Class A2 (1080p FHD, 33f)  
+**Governing Standard**: `google3/experimental/users/chengchen/skills/av2-speed-optimization/SKILL.md`
 
 ---
 
 ## 1. Executive Summary
 
-A complete empirical evaluation of **all 101 individual speed features** implemented in `av2/encoder/speed_features.c` (`set_good_speed_feature_framesize_dependent` and `set_good_speed_features_framesize_independent`) was conducted on Cloud across **208 benchmarking runs**.
+A complete empirical evaluation of **all 101 individual speed features** implemented in `av2/encoder/speed_features.c` (`set_good_speed_feature_framesize_dependent` and `set_good_speed_features_framesize_independent`) was conducted on Google EDA Cloud across **208 benchmarking runs**.
 Each speed feature was evaluated using an isolated **Speed Feature OFF test** on dedicated Git branches (`sf_test/1_...` through `sf_test/101_...`) against the clean baseline commit `fe1bfdee54`.
 
 ### Key Findings & Compliance Overview
@@ -24,13 +26,25 @@ Each speed feature was evaluated using an isolated **Speed Feature OFF test** on
 | **Speed 4** | 26 | Ratio $\ge 20$ | **12** | **14** | 46.2% | TX stats pruning, DC block prediction, Warp diamond search |
 | **Total** | **101** | — | **21** | **80** | **20.8%** | In-loop filters & partition pruning provide bulk of valid speedup |
 
+## 2. Baseline Speed Progression (Speed 0 to Speed 4)
+
+To contextualize individual speed features, the baseline encoder was benchmarked across presets 0, 1, 2, 3, and 4 on the identical baseline commit `fe1bfdee54`:
+
+| Speed Preset | A1 BD-Rate | A1 EncTime | A2 BD-Rate | A2 EncTime | Cumulative BD Loss | Time Reduction vs Spd 0 | Preset Ratio |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Speed 1** | +1.32% | 41.26% | +2.33% | 32.38% | +1.83% | +63.18% | 34.6 |
+| **Speed 2** | +5.94% | 16.62% | +5.83% | 13.43% | +5.88% | +84.97% | 14.4 |
+| **Speed 3** | +11.35% | 13.14% | +10.85% | 10.27% | +11.10% | +88.30% | 8.0 |
+| **Speed 4** | +14.83% | 10.33% | +14.31% | 7.66% | +14.57% | +91.00% | 6.2 |
+
+
 ## 3. Experimental Methodology & Evaluation Protocol
 
 ### A. Speed Feature OFF Test Formulation
 To measure the precise causal impact of each speed feature without confounding multi-variable interference, a single-feature differential methodology was employed:
 1. **Branch Isolation**: Off the anchor commit `fe1bfdee54`, 101 isolated Git branches (`sf_test/1_...` to `sf_test/101_...`) were created.
 2. **Inverse Delta Application**: On branch `sf_test/N`, exactly one speed feature assignment in `speed_features.c` was reverted to its unrestricted/slower predecessor level.
-3. **Parallel Cloud Benchmarking**: Each branch was submitted to Cloud under CTC Random Access (RA) for:
+3. **Parallel Cloud Benchmarking**: Each branch was submitted to Google EDA Cloud under CTC Random Access (RA) for:
    - **Class A1**: 8 sequences, 3840x2160 (4K UHD), 17 frames
    - **Class A2**: 19 sequences, 1920x1080 (1080p FHD), 33 frames
 4. **Metric Derivation**:
