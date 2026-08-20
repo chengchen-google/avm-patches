@@ -1,0 +1,163 @@
+From c94ea7104ebc6a78a0eac4217fc5f193e3312f60 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 19 Aug 2026 16:16:17 -0500
+Subject: [PATCH] Speed 3: add size-graded orientation pruning
+
+---
+ av2/encoder/encodeframe_utils.h |   6 ++
+ av2/encoder/partition_search.c  | 108 ++++++++++++++++++++++++++++++++
+ 2 files changed, 114 insertions(+)
+
+diff --git a/av2/encoder/encodeframe_utils.h b/av2/encoder/encodeframe_utils.h
+index c0da1810d..c755b00c3 100644
+--- a/av2/encoder/encodeframe_utils.h
++++ b/av2/encoder/encodeframe_utils.h
+@@ -168,6 +168,12 @@ typedef struct PartitionSearchState {
+   int ss_x;
+   int ss_y;
+ 
++  // Lazily computed source-profile variance for orientation-based rectangular
++  // partition pruning.
++  uint64_t src_profile_var_rows;
++  uint64_t src_profile_var_cols;
++  bool src_profile_valid;
++
+   // This flag will be set if best partition is found from the search.
+   bool found_best_partition;
+ 
+diff --git a/av2/encoder/partition_search.c b/av2/encoder/partition_search.c
+index 6ae591028..bd11da316 100644
+--- a/av2/encoder/partition_search.c
++++ b/av2/encoder/partition_search.c
+@@ -3185,6 +3185,10 @@ static void init_partition_search_state_params(
+     tree_type = SHARED_PART;
+   }
+ 
++  part_search_state->src_profile_valid = false;
++  part_search_state->src_profile_var_rows = 0;
++  part_search_state->src_profile_var_cols = 0;
++
+   // Initialization of block size related parameters.
+   blk_params->mi_step = mi_size_wide[bsize] / 2;
+   blk_params->mi_step_h = mi_size_high[bsize] / 2;
+@@ -3478,6 +3482,108 @@ static void prune_rect_with_mlp(const AV2_COMP *cpi, MACROBLOCK *x,
+   }
+ }
+ 
++enum {
++  RECT_PART_ANISOTROPY = 8,
++  PART_PROFILE_SAMPLES = 32,
++};
++
++// Scale the evidence required to prune a rectangular partition. A wrong
++// decision is more expensive on large blocks and on frames referenced by more
++// of the GOP, so those cases require a stronger directional signal.
++static AVM_INLINE uint64_t orientation_anisotropy(
++    const AV2_COMP *const cpi, BLOCK_SIZE bsize) {
++  const GF_GROUP *const gf_group = &cpi->gf_group;
++  const int layer_depth = gf_group->layer_depth[gf_group->index];
++  if (layer_depth <= 0) return 0;
++
++  uint64_t anisotropy = RECT_PART_ANISOTROPY;
++  if (layer_depth == 1)
++    anisotropy *= 4;
++  else if (layer_depth == 2)
++    anisotropy *= 2;
++
++  const int dim = AVMMAX(block_size_wide[bsize], block_size_high[bsize]);
++  if (dim >= 64)
++    anisotropy *= 4;
++  else if (dim >= 32)
++    anisotropy *= 2;
++  return anisotropy;
++}
++
++// Average rows and columns on a lattice no larger than 32 by 32, then compare
++// the variance of the two one-dimensional profiles. This measures structure at
++// partition scale while suppressing fine texture.
++static AVM_INLINE void compute_source_profile_variance(
++    const MACROBLOCK *x, BLOCK_SIZE bsize,
++    PartitionSearchState *part_search_state) {
++  const struct buf_2d *const src = &x->plane[AVM_PLANE_Y].src;
++  const int bw = block_size_wide[bsize];
++  const int bh = block_size_high[bsize];
++  const int step_x = AVMMAX(1, bw / PART_PROFILE_SAMPLES);
++  const int step_y = AVMMAX(1, bh / PART_PROFILE_SAMPLES);
++  const int num_x = AVMMIN(PART_PROFILE_SAMPLES, bw / step_x);
++  const int num_y = AVMMIN(PART_PROFILE_SAMPLES, bh / step_y);
++
++  int64_t row_sum[PART_PROFILE_SAMPLES] = { 0 };
++  int64_t col_sum[PART_PROFILE_SAMPLES] = { 0 };
++  int64_t total = 0;
++  for (int si = 0; si < num_y; ++si) {
++    const uint16_t *const row =
++        src->buf + (ptrdiff_t)si * step_y * src->stride;
++    for (int sj = 0; sj < num_x; ++sj) {
++      const int64_t value = row[sj * step_x];
++      row_sum[si] += value;
++      col_sum[sj] += value;
++    }
++    total += row_sum[si];
++  }
++
++  const int64_t mean = total / ((int64_t)num_x * num_y);
++  int64_t var_rows = 0;
++  int64_t var_cols = 0;
++  for (int si = 0; si < num_y; ++si) {
++    const int64_t diff = row_sum[si] / num_x - mean;
++    var_rows += diff * diff;
++  }
++  for (int sj = 0; sj < num_x; ++sj) {
++    const int64_t diff = col_sum[sj] / num_y - mean;
++    var_cols += diff * diff;
++  }
++
++  part_search_state->src_profile_var_rows = (uint64_t)(var_rows / num_y);
++  part_search_state->src_profile_var_cols = (uint64_t)(var_cols / num_x);
++  part_search_state->src_profile_valid = true;
++}
++
++static AVM_INLINE void prune_rect_by_structure_orientation(
++    const AV2_COMP *const cpi, const MACROBLOCK *x,
++    PartitionSearchState *part_search_state) {
++  if (cpi->oxcf.speed != 3 ||
++      part_search_state->forced_partition != PARTITION_INVALID) {
++    return;
++  }
++
++  const BLOCK_SIZE bsize = part_search_state->part_blk_params.bsize;
++  if (block_size_wide[bsize] < 16 || block_size_high[bsize] < 16) return;
++  if (!is_rect_part_allowed(cpi, part_search_state, PARTITION_HORZ) &&
++      !is_rect_part_allowed(cpi, part_search_state, PARTITION_VERT)) {
++    return;
++  }
++
++  const uint64_t anisotropy = orientation_anisotropy(cpi, bsize);
++  if (anisotropy == 0) return;
++  if (!part_search_state->src_profile_valid)
++    compute_source_profile_variance(x, bsize, part_search_state);
++
++  const uint64_t var_rows = part_search_state->src_profile_var_rows;
++  const uint64_t var_cols = part_search_state->src_profile_var_cols;
++  if (var_cols * anisotropy < var_rows) {
++    part_search_state->prune_partition[PARTITION_VERT] = true;
++  } else if (var_rows * anisotropy < var_cols) {
++    part_search_state->prune_partition[PARTITION_HORZ] = true;
++  }
++}
++
+ // Prune rectangular partition types based on mlp. One of the features of mlp is
+ // partition none rdcost. It is possible that none rd might not be evaluated by
+ // now if adaptive_partition_search_order is enabled. In this case default none
+@@ -3533,6 +3639,8 @@ static void prune_rect_partitions(AV2_COMP *const cpi, ThreadData *td,
+                        &part_search_state->prune_partition[PARTITION_VERT]);
+   }
+ 
++  prune_rect_by_structure_orientation(cpi, x, part_search_state);
++
+   if (cpi->sf.part_sf.prune_rect_with_none_rd &&
+       part_search_state->forced_partition == PARTITION_INVALID &&
+       !frame_is_intra_only(cm) && part_none_rd < INT64_MAX) {
+-- 
+2.51.1
+

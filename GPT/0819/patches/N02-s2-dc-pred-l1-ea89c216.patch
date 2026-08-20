@@ -1,0 +1,30 @@
+From 4fb65d74c8b4e91603d1a953e2a9afb6e1713559 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 19 Aug 2026 16:16:17 -0500
+Subject: [PATCH] Speed 2: enable conservative DC block prediction
+
+---
+ av2/encoder/speed_features.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 820b2f9b6..7f31986cf 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -483,6 +483,13 @@ static void set_good_speed_features_framesize_independent(
+     sf->tpl_sf.skip_alike_starting_mv = 1;
+   }
+ 
++  // Use the conservative DC-only residual predictor at speed 2.  Level 1
++  // applies the existing variance/mean test during default and mode
++  // evaluation, but leaves winner-mode evaluation unchanged.
++  if (speed == 2) {
++    sf->winner_mode_sf.dc_blk_pred_level = 1;
++  }
++
+   if (speed >= 3) {
+     // These features are moved down from speed 2
+     // --- Start ---
+-- 
+2.51.1
+

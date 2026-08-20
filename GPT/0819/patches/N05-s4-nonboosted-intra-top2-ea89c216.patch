@@ -1,0 +1,35 @@
+From d42b7f1410b0168b3a9eb8444d980ba15d1b34dc Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 19 Aug 2026 16:16:17 -0500
+Subject: [PATCH] Speed 4: use top-2 intra shortlist on non-boosted frames
+
+---
+ av2/encoder/encodeframe_utils.h | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/av2/encoder/encodeframe_utils.h b/av2/encoder/encodeframe_utils.h
+index c0da1810d..13ffee4c8 100644
+--- a/av2/encoder/encodeframe_utils.h
++++ b/av2/encoder/encodeframe_utils.h
+@@ -197,9 +197,15 @@ static AVM_INLINE void av2_set_two_pass_flags(
+     x->intra_mode_prune_top = 2;
+     x->inter_mode_prune_top = 4;
+   } else {
+-    // Full pool.
+-    x->intra_mode_prune_top =
+-        cpi->sf.intra_sf.intra_pruning_with_mlp ? 4 : TOP_INTRA_MODEL_COUNT;
++    // Full pool. At speed 4, preserve the original four survivors on frames
++    // that anchor prediction for the GOP, while using the measured top-2
++    // policy only on the remaining frames.
++    if (cpi->sf.intra_sf.intra_pruning_with_mlp && cpi->oxcf.speed == 4) {
++      x->intra_mode_prune_top = frame_is_kf_gf_arf(cpi) ? 4 : 2;
++    } else {
++      x->intra_mode_prune_top =
++          cpi->sf.intra_sf.intra_pruning_with_mlp ? 4 : TOP_INTRA_MODEL_COUNT;
++    }
+     x->inter_mode_prune_top = TOP_MOTION_MODE_MODEL_COUNT;
+   }
+ }
+-- 
+2.51.1
+

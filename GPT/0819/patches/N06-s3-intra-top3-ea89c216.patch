@@ -1,0 +1,31 @@
+From 248ad1f9bac90166d4ab7217294a99199666d41c Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 19 Aug 2026 16:16:17 -0500
+Subject: [PATCH] Speed 3: use top-3 intra shortlist
+
+---
+ av2/encoder/encodeframe_utils.h | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/av2/encoder/encodeframe_utils.h b/av2/encoder/encodeframe_utils.h
+index c0da1810d..e3e095729 100644
+--- a/av2/encoder/encodeframe_utils.h
++++ b/av2/encoder/encodeframe_utils.h
+@@ -197,9 +197,12 @@ static AVM_INLINE void av2_set_two_pass_flags(
+     x->intra_mode_prune_top = 2;
+     x->inter_mode_prune_top = 4;
+   } else {
+-    // Full pool.
++    // Full pool. Retain three rather than four model-RD survivors at speed 3;
++    // the dry and reused wet passes keep their existing narrower limits.
+     x->intra_mode_prune_top =
+-        cpi->sf.intra_sf.intra_pruning_with_mlp ? 4 : TOP_INTRA_MODEL_COUNT;
++        cpi->sf.intra_sf.intra_pruning_with_mlp
++            ? (cpi->oxcf.speed == 3 ? 3 : 4)
++            : TOP_INTRA_MODEL_COUNT;
+     x->inter_mode_prune_top = TOP_MOTION_MODE_MODEL_COUNT;
+   }
+ }
+-- 
+2.51.1
+

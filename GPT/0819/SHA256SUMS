@@ -1,0 +1,6 @@
+1f1ec237080e4cd396a48b274be616094217a8a9e39477bad3894156382e75ac  patches/N01-s1-tx-stats-ea89c216.patch
+05961e2ec85cbd376730f383badcd3a6511fbd948f50907d9cb4300f225e81ca  patches/N02-s2-dc-pred-l1-ea89c216.patch
+c19c4014ad90f9963ee58e54beeca6ae45a4a54fd594fd11e286903a01a01afb  patches/N03-s3-tx-stationarity-margin2-ea89c216.patch
+a1432b354e3ee2fc9de3c8855c81afca7a6604ed1180944bafd8076bab18811e  patches/N04-s3-orientation-size-graded-ea89c216.patch
+40e547c6c59137261f726bc7e50e1a165097b4795c6270f2e7457996d9de3799  patches/N05-s4-nonboosted-intra-top2-ea89c216.patch
+3cd6e0d8efa4a56eb9ceab7722f558583ea61422bfe9787a0a1c73d97feeb5aa  patches/N06-s3-intra-top3-ea89c216.patch
