@@ -1,0 +1,2 @@
+db1472bddcc187a4415afb251d7681ec72bb0ed76dc7ab2a93aee3e30195a804  AV2_Speed4_Advanced_Research_5d628d840.md
+ea31081a70d0a761ea6914b2298042b714ca0785620f9e4725c31fb2d6a81582  patches/0001-Speed-4-rank-non-DCT-inter-transforms-before-TCQ-ref.patch

@@ -1,0 +1,180 @@
+From 75f43d5a92c415f4395a59436e7dbc9866bd2df1 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 20 Aug 2026 17:39:45 -0500
+Subject: [PATCH] Speed 4: rank non-DCT inter transforms before TCQ refine
+
+---
+ av2/encoder/speed_features.c |  2 +
+ av2/encoder/speed_features.h |  6 +++
+ av2/encoder/tx_search.c      | 83 +++++++++++++++++++++++++++++++-----
+ 3 files changed, 81 insertions(+), 10 deletions(-)
+
+diff --git a/av2/encoder/speed_features.c b/av2/encoder/speed_features.c
+index 18cdd47e3..358572ee7 100644
+--- a/av2/encoder/speed_features.c
++++ b/av2/encoder/speed_features.c
+@@ -613,6 +613,7 @@ static void set_good_speed_features_framesize_independent(
+     sf->tx_sf.tx_type_search.winner_mode_tx_type_pruning = 1;
+     sf->tx_sf.tx_type_search.prune_2d_txfm_mode = TX_TYPE_PRUNE_2;
+     sf->tx_sf.tx_type_search.prune_tx_type_est_rd = 1;
++    sf->tx_sf.tcq_non_dct_rank_then_refine = true;
+ 
+     sf->rd_sf.perform_coeff_opt = is_boosted_arf2_bwd_type ? 3 : 5;
+     sf->rd_sf.tx_domain_dist_thres_level = 1;
+@@ -947,6 +948,7 @@ static AVM_INLINE void init_tx_sf(TX_SPEED_FEATURES *tx_sf) {
+   tx_sf->prune_inter_tx_part_rd_eval = false;
+   tx_sf->enable_tx_partition = true;
+   tx_sf->enable_adaptive_tx_search_level = false;
++  tx_sf->tcq_non_dct_rank_then_refine = false;
+   tx_sf->prune_intra_ist_stx_by_zero_eob = false;
+ }
+ 
+diff --git a/av2/encoder/speed_features.h b/av2/encoder/speed_features.h
+index d3a7b234d..5b6a94c7f 100644
+--- a/av2/encoder/speed_features.h
++++ b/av2/encoder/speed_features.h
+@@ -947,6 +947,12 @@ typedef struct TX_SPEED_FEATURES {
+   // Base qindex upper bound for applying the adaptive TCQ threshold
+   int adaptive_tcq_threshold_qidx;
+ 
++  // During inter transform-type search, rank non-DCT 2-D candidates with
++  // scalar quantization and refine only candidates close to the best RD with
++  // full TCQ. DCT_DCT and every candidate that can become the winner retain
++  // full TCQ evaluation.
++  bool tcq_non_dct_rank_then_refine;
++
+   // Skip IST/STX cascade for intra-luma candidates whose primary transform
+   // quantizes to zero. Extends the intra-luma pre-skip / post-trellis gates
+   // from eob == 1 to also cover eob == 0 (stx > 0 only, so skip-coded
+diff --git a/av2/encoder/tx_search.c b/av2/encoder/tx_search.c
+index 593fd928a..d1fd0ea4b 100644
+--- a/av2/encoder/tx_search.c
++++ b/av2/encoder/tx_search.c
+@@ -23,6 +23,10 @@
+ #include "av2/encoder/tx_prune_model_weights.h"
+ #include "av2/encoder/tx_search.h"
+ 
++#ifndef AVM_TCQ_RANK_REFINE_MARGIN_DEN
++#define AVM_TCQ_RANK_REFINE_MARGIN_DEN 8
++#endif
++
+ struct rdcost_block_args {
+   const AV2_COMP *cpi;
+   MACROBLOCK *x;
+@@ -2492,7 +2496,15 @@ static void search_tx_type(const AV2_COMP *cpi, MACROBLOCK *x, int plane,
+       }
+     }
+ 
+-    const int skip_trellis_in = skip_trellis;
++    const TX_CLASS primary_tx_class = tx_type_to_class[primary_tx_type];
++    const bool use_tcq_for_candidate =
++        tcq_enable(cpi->common.features.tcq_mode, is_lossless, plane,
++                   primary_tx_class);
++    const bool tcq_rank_only =
++        tx_sf->tcq_non_dct_rank_then_refine && is_inter &&
++        primary_tx_type != DCT_DCT && use_tcq_for_candidate && !skip_trellis &&
++        !is_fsc && !use_inter_fsc(cm, plane, primary_tx_type, is_inter);
++    const int skip_trellis_in = skip_trellis || tcq_rank_only;
+     av2_update_trellisq(!skip_trellis_in,
+                         skip_trellis_in ? xform_quant_b : AV2_XFORM_QUANT_FP,
+                         cpi->oxcf.q_cfg.quant_b_adapt, &quant_param);
+@@ -2584,11 +2596,9 @@ static void search_tx_type(const AV2_COMP *cpi, MACROBLOCK *x, int plane,
+           }
+         }
+ 
+-        const TX_CLASS tx_class = tx_type_to_class[primary_tx_type];
+-        const bool use_tcq = tcq_enable(cpi->common.features.tcq_mode,
+-                                        is_lossless, plane, tx_class);
++        const bool use_tcq = use_tcq_for_candidate;
+         if (use_tcq) {
+-          skip_trellis_based_on_satd[txfm_param.tx_type] = skip_trellis;
++          skip_trellis_based_on_satd[txfm_param.tx_type] = skip_trellis_in;
+         } else {
+           skip_trellis_based_on_satd[txfm_param.tx_type] =
+               skip_trellis_opt_based_on_satd(
+@@ -2601,7 +2611,7 @@ static void search_tx_type(const AV2_COMP *cpi, MACROBLOCK *x, int plane,
+         uint8_t fsc_mode_in =
+             ((cm->seq_params.enable_fsc && is_fsc && plane == AVM_PLANE_Y) ||
+              use_inter_fsc(cm, plane, packed_tx_type, is_inter));
+-        const int use_tcq_deadzone_boost =
++        int use_tcq_deadzone_boost =
+             use_tcq && quant_param.use_optimize_b && !fsc_mode_in &&
+             tx_sf->enable_adaptive_tcq_threshold &&
+             cm->quant_params.base_qindex < tx_sf->adaptive_tcq_threshold_qidx;
+@@ -2654,9 +2664,11 @@ static void search_tx_type(const AV2_COMP *cpi, MACROBLOCK *x, int plane,
+           continue;
+         }
+ 
+-        // If rd cost based on coeff rate alone is already more than best_rd,
+-        // terminate early.
+-        if (RDCOST(x->rdmult, rate_cost, 0) > best_rd) continue;
++        // A rank-only candidate still needs its distortion before deciding
++        // whether it is close enough to merit full TCQ refinement. The normal
++        // rate-only exit remains in place for every other candidate.
++        if (!tcq_rank_only && RDCOST(x->rdmult, rate_cost, 0) > best_rd)
++          continue;
+ 
+         RD_STATS this_rd_stats = get_tx_blk_distortion(
+             cpi, x, plane, block, blk_row, blk_col, tx_size, block_sse,
+@@ -2665,9 +2677,60 @@ static void search_tx_type(const AV2_COMP *cpi, MACROBLOCK *x, int plane,
+ 
+         this_rd_stats.rate = rate_cost;
+ 
+-        const int64_t rd =
++        int64_t rd =
+             RDCOST(x->rdmult, this_rd_stats.rate, this_rd_stats.dist);
+ 
++        // Full TCQ dominates the encoder profile. For non-DCT inter transform
++        // types, use scalar quantization only as a ranking proxy. A candidate
++        // close to the current winner is immediately re-quantized and
++        // re-evaluated with full TCQ before it can win. Candidates outside the
++        // margin cannot replace best_rd and are left in rank-only form.
++        const bool refine_ranked_candidate =
++            tcq_rank_only &&
++            (best_rd == INT64_MAX ||
++             rd <= best_rd ||
++             rd - best_rd <=
++                 (best_rd / AVM_TCQ_RANK_REFINE_MARGIN_DEN));
++        if (refine_ranked_candidate) {
++          av2_update_trellisq(1, AV2_XFORM_QUANT_FP,
++                              cpi->oxcf.q_cfg.quant_b_adapt, &quant_param);
++          use_tcq_deadzone_boost =
++              tx_sf->enable_adaptive_tcq_threshold &&
++              cm->quant_params.base_qindex <
++                  tx_sf->adaptive_tcq_threshold_qidx;
++          av2_quant(use_tcq_deadzone_boost, x, plane, block, &txfm_param,
++                    &quant_param);
++
++          if (prune_tx_search_by_eob(
++                  xd, blk_row, blk_col, tx_size, *eob, plane, is_inter,
++                  primary_tx_type, stx, &eob_found,
++                  tx_sf->prune_intra_ist_stx_by_zero_eob)) {
++            continue;
++          }
++
++          av2_optimize_b(cpi, x, plane, block, tx_size, packed_tx_type,
++                         CCTX_NONE, txb_ctx, &rate_cost);
++          if (prune_tx_search_by_eob(
++                  xd, blk_row, blk_col, tx_size, *eob, plane, is_inter,
++                  primary_tx_type, stx, &eob_found,
++                  tx_sf->prune_intra_ist_stx_by_zero_eob)) {
++            continue;
++          }
++
++          this_rd_stats = get_tx_blk_distortion(
++              cpi, x, plane, block, blk_row, blk_col, tx_size, block_sse,
++              eobs_ptr[block], dc_only_blk, fsc_mode_in,
++              use_transform_domain_distortion);
++          this_rd_stats.rate = rate_cost;
++          rd = RDCOST(x->rdmult, this_rd_stats.rate, this_rd_stats.dist);
++          skip_trellis_based_on_satd[txfm_param.tx_type] = 0;
++        }
++
++        // The proxy result is not eligible to update the winner or drive any
++        // downstream early-termination heuristic. This keeps proxy EOB and
++        // entropy state from influencing the remaining candidate search.
++        if (tcq_rank_only && !refine_ranked_candidate) continue;
++
+         if (is_lossless) {
+           assert(this_rd_stats.dist == 0);
+         }
